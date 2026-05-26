@@ -9,13 +9,21 @@ from utils.calendar_utils import (
     count_holidays,
 )
 
+from utils.config_utils import (
+    read_spreadsheet_url,
+)
+
 from utils.sheets_utils import (
     read_worksheet_as_records,
     read_employee_job_table_as_nested_dict,
 )
 
-from utils.solver_callbacks import (
-    ObjectiveImprovementLogger,
+# from utils.solver_callbacks import (
+#     ObjectiveImprovementLogger,
+# )
+
+from utils.intermediate_solution_callback import(
+  IntermediateCsvOnImprovementCallback,
 )
 
 from writers.shift_csv_writer import (
@@ -160,7 +168,9 @@ def main():
     model_ymt = cp_model.CpModel()
 
     # スプレッドシートURL
-    spreadsheet_url = "https://docs.google.com/spreadsheets/d/1zlwWyucmmhf7QJ22MFG6Nn_tHrW1Wpw_IPbwiDDPGh4/edit?gid=0#gid=0"
+    project_dir = "/content/drive/MyDrive/my_shift_project"
+
+    spreadsheet_url = read_spreadsheet_url(project_dir)
 
     # ignore_workdays_employees = read_special_care_personal_data(
     #     spreadsheet_url,
@@ -452,6 +462,7 @@ def main():
         spreadsheet_url,
         read_worksheet_as_records,
         max_diff=5,
+        requested_off_days=requested_off_days,
     )
 
     ####################
@@ -474,7 +485,7 @@ def main():
     ####################
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 300
+    solver.parameters.max_time_in_seconds = 180
     solver.parameters.num_search_workers = 8
 
     if enable_log:
@@ -482,14 +493,27 @@ def main():
     else:
         solver.parameters.log_search_progress = False
 
+    output_dir = "/content/drive/MyDrive/my_shift_project/outputs"
+
     if enable_progress:
-        progress_logger = ObjectiveImprovementLogger(
+        progress_callback = IntermediateCsvOnImprovementCallback(
             objective_var=total_workdays_diff,
+            x=x,
+            employees=employees,
+            days=days,
+            jobs=jobs,
+            date_info=date_info,
+            output_dir=output_dir,
+            year=year,
+            month=month,
+            requested_off_days=requested_off_days,
             label="total_workdays_diff",
             minimize=True,
+            write_spreadsheet=True,
         )
 
-        status = solver.Solve(model_ymt, progress_logger)
+        status = solver.Solve(model_ymt, progress_callback)
+
     else:
         status = solver.Solve(model_ymt)
 
@@ -508,17 +532,44 @@ def main():
         print()
         print("Workdays by employee")
         for e in employees:
-            actual = solver.Value(employee_workdays[e])
+            # 実際にjobに入った日数
+            assigned_workdays = sum(
+                1
+                for d in days
+                if sum(solver.Value(x[(e, d, j)]) for j in jobs) >= 1
+            )
+
+            # 有給日数
+            paid_leave_days = sum(
+                1
+                for d in days
+                if requested_off_days.get((e, d)) == "有給"
+            )
+
+            # workdays制約で使っている実質勤務日数
+            effective_workdays = solver.Value(employee_workdays[e])
 
             if e in ignore_workdays_employees:
-                print(f"  {e}: {actual} / required ignored")
+                print(
+                    f"  {e}: "
+                    f"実質 {effective_workdays}日 "
+                    f"(実勤務 {assigned_workdays}日 + 有給 {paid_leave_days}日) "
+                    f"/ required ignored"
+                )
             else:
                 required = required_workdays[e]
                 diff = solver.Value(employee_workdays_diff[e])
-                print(f"  {e}: {actual} / required {required} / diff {diff}")
 
-        print()
-        print("total_workdays_diff:", solver.Value(total_workdays_diff))
+                print(
+                    f"  {e}: "
+                    f"実質 {effective_workdays}日 "
+                    f"/ required {required}日 "
+                    f"/ diff {diff}日 "
+                    f"(実勤務 {assigned_workdays}日 + 有給 {paid_leave_days}日)"
+                )
+
+                print()
+                print("total_workdays_diff:", solver.Value(total_workdays_diff))
 
         if enable_log:
             print()
@@ -570,30 +621,6 @@ def main():
                 f"/ required {required_full_day_off_count}日 - "
                 f"{', '.join(full_off_dates)}"
             )
-
-        output_dir = "/content/drive/MyDrive/my_shift_project/outputs"
-
-        if enable_progress:
-            progress_callback = IntermediateCsvOnImprovementCallback(
-                objective_var=total_workdays_diff,
-                x=x,
-                employees=employees,
-                days=days,
-                jobs=jobs,
-                date_info=date_info,
-                output_dir=output_dir,
-                year=year,
-                month=month,
-                requested_off_days=requested_off_days,
-                label="total_workdays_diff",
-                minimize=True,
-                write_spreadsheet=True,
-            )
-
-            status = solver.Solve(model_ymt, progress_callback)
-
-        else:
-            status = solver.Solve(model_ymt)
 
         write_shift_schedule_csv(
             solver,
