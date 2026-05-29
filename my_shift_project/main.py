@@ -114,6 +114,10 @@ from constraints.necessary_consecutive_holidays_constraints import (
     add_necessary_consecutive_holidays_constraints,
 )
 
+from constraints.following_job_limitation_constraints import (
+    add_following_job_limitation_constraints,
+)
+
 def main():
     parser = argparse.ArgumentParser(
         description="指定された年月のシフトを作成します。"
@@ -436,6 +440,17 @@ def main():
         necessary_consecutive_holidays_length,
         consecutive_holiday_window_vars,
     ) = add_necessary_consecutive_holidays_constraints(
+        model_ymt,
+        x,
+        employees,
+        days,
+        jobs,
+        spreadsheet_url,
+        read_worksheet_as_records,
+    )
+
+    # 16. jobごとの翌日勤務制限
+    following_job_limitations = add_following_job_limitation_constraints(
         model_ymt,
         x,
         employees,
